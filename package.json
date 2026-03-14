@@ -1,0 +1,10 @@
+{
+  "name": "claude-codex-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code plugin that integrates OpenAI Codex as plan reviewer and code implementer",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
