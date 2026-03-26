@@ -1,89 +1,71 @@
 ---
 name: codex
-description: Orchestrates a collaborative workflow where Claude creates a plan, OpenAI Codex reviews it, Claude refines, then Codex implements the code changes. Use when you want Codex to review your plans and write the implementation code.
+description: Delegate tasks to an OpenAI Codex subagent. Codex can autonomously read/write files, run shell commands, and search the web in a sandboxed environment. Supports thread resume for follow-up interactions.
 user-invocable: true
 allowed-tools: Read, Grep, Glob, Bash, Agent
 argument-hint: <task description>
 ---
 
-# Codex Collaborative Workflow
+# Codex Subagent
 
-You orchestrate a collaborative coding workflow between Claude and OpenAI Codex. Claude handles planning and orchestration, Codex handles plan review and code implementation.
+Codex is an autonomous coding agent (powered by OpenAI) that can read/write files, run shell commands, and search the web — all within a sandboxed environment. You communicate with Codex by sending it a prompt via the bridge script and reading its response.
 
 ## Task
 $ARGUMENTS
 
-## Workflow
+## How to Invoke Codex
 
-### Phase 1: Explore and Plan
+Construct a JSON payload and pipe it to the bridge script:
 
-1. **Understand the task**: Read the task description above. Explore the codebase as needed using Read, Grep, and Glob to understand the current state, existing patterns, and relevant files.
+```bash
+node "$CLAUDE_SKILL_DIR/../../scripts/codex.mjs" /path/to/workdir <<'ENDJSON'
+{
+  "prompt": "Your instruction to Codex here",
+  "sandboxMode": "workspace-write"
+}
+ENDJSON
+```
 
-2. **Create an initial plan**: Write a detailed implementation plan that includes:
-   - Files to create or modify (with full paths)
-   - Key architectural decisions and rationale
-   - Step-by-step implementation order
-   - Edge cases and error handling considerations
-   - Relevant existing code patterns to follow
+Use a Bash timeout of 600000–1200000ms (Codex may take time for complex tasks).
 
-### Phase 2: Codex Plan Review
+Codex is autonomous — it will explore the codebase, read files, and run commands on its own. You don't need to pre-gather file context. Just describe the task clearly.
 
-3. **Get Codex review**: Invoke the `codex-plan-reviewer` agent. Pass it the original task and your detailed plan. The agent will gather relevant file contents and send everything to Codex for review.
+### Output Format
 
-   Example Agent invocation:
-   ```
-   Review this implementation plan.
+The script outputs:
+1. Codex's response text
+2. Git diff and new files list (when `sandboxMode` is `workspace-write`)
+3. A thread ID trailer: `<!-- CODEX_THREAD_ID: {id} -->`
 
-   ## Task
-   <the original task from $ARGUMENTS>
+## Thread Resume
 
-   ## Plan
-   <your detailed plan>
+Each Codex response includes a thread ID. To continue a conversation — send follow-ups, request corrections, or iterate on prior work — pass the `threadId` field of the Codex response that you wish to follow up/iterate on:
 
-   ## Files to gather context from
-   <list the key files the reviewer should read>
-   ```
+```json
+{
+  "prompt": "The auth middleware looks good but needs rate limiting. Add it.",
+  "sandboxMode": "workspace-write",
+  "threadId": "thread_abc123"
+}
+```
 
-4. **Process Codex's feedback**: Read the review carefully. For each issue:
-   - **Critical**: Must be resolved before proceeding
-   - **Important**: Should be resolved unless you have a strong counterargument
-   - **Minor**: Consider resolving; note if intentionally skipped
+This is the key advantage over Claude's native subagents: Codex retains full context from prior interactions. Use this to iterate rather than starting from scratch.
 
-5. **Refine the plan**: Produce an updated plan that incorporates Codex's feedback. Note what was changed and why.
+## Configuration
 
-### Phase 3: Codex Implementation
+| Field | Values | Description |
+|-------|--------|-------------|
+| `sandboxMode` | `read-only`, `workspace-write` | Controls file system access |
+| `reasoningEffort` | `medium`, `high`, `xhigh` | How much reasoning Codex applies |
+| `model` | model name string | Override the default Codex model |
 
-6. **Invoke Codex implementer**: Pass the task and refined plan to the `codex-implementer` agent. The agent will gather relevant source files and send everything to Codex for implementation.
+All configuration fields are optional. Omit them to use defaults.
 
-   Example Agent invocation:
-   ```
-   Implement the following task according to the refined plan.
+## Subagents
 
-   ## Task
-   <the original task from $ARGUMENTS>
+Two specialized subagents are available for common patterns:
 
-   ## Refined Plan
-   <the refined plan incorporating Codex's review feedback>
+- **`codex-second-planner`**: Sends a task summary to Codex so it can independently explore the codebase and produce its own implementation plan. Pass it the task and a summary of your planning discussion with the user. After receiving Codex's plan, compare it with your own and synthesize a combined plan with the best parts of both.
+- **`codex-implementer`**: Sends a task + plan to Codex for autonomous implementation in `workspace-write` mode. Pass it the task, a summary of the planning discussion, and the plan to implement. Codex will explore the codebase and make the changes. Returns a summary and git diff.
 
-   ## Files to gather context from
-   <list the key files the implementer should read before sending to Codex>
-   ```
-
-7. **Review results**: Examine the implementation summary and diff returned by the implementer. Use Read, Grep, and Glob to verify the changes in the actual files. Check for:
-   - Correctness and completeness
-   - Code quality and consistency with existing patterns
-   - No unintended side effects
-
-### Phase 4: Report
-
-8. **Report to user**: Provide a clear summary including:
-   - What was planned (brief)
-   - Key feedback from Codex's review (brief)
-   - What was implemented (the diff or summary of changes)
-   - Any concerns or follow-up items
-
-## Error Handling
-
-- If the Codex review script fails (e.g., not authenticated), inform the user they need to run `codex login` or set `CODEX_API_KEY`, and offer to proceed without Codex review.
-- If the Codex implementation fails, inform the user and offer to implement the refined plan yourself using standard Claude Code tools.
-- If changes look incorrect after implementation, flag specific concerns to the user rather than silently accepting them.
+Both subagents handle JSON construction, script invocation, and thread ID extraction. Codex explores the codebase autonomously — no need to pre-gather file context.
